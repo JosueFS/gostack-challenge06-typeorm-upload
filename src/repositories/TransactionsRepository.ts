@@ -8,10 +8,33 @@ interface Balance {
   total: number;
 }
 
+interface CreateTransactionDTO {
+  title: string;
+  value: number;
+  type: 'income' | 'outcome';
+}
+
 @EntityRepository(Transaction)
 class TransactionsRepository extends Repository<Transaction> {
-  public async getBalance(): Promise<Balance> {
-    // TODO
+  public getBalance(transactions: Transaction[]): Balance {
+    const balance: Balance = transactions.reduce(
+      (accum, obj) => {
+        const b = accum;
+
+        b[obj.type] += obj.value;
+
+        return b;
+      },
+      {
+        income: 0,
+        outcome: 0,
+        total: 0,
+      },
+    );
+
+    balance.total = balance.income - balance.outcome;
+
+    return balance;
   }
 }
 
