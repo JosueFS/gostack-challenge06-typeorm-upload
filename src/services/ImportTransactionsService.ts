@@ -1,13 +1,15 @@
-import { getCustomRepository, getRepository, In } from 'typeorm';
 import csvParse from 'csv-parse';
 import fs from 'fs';
+import path from 'path';
 
+import { getRepository, getCustomRepository, In } from 'typeorm';
+
+import TransactionsRepository from '../repositories/TransactionsRepository';
+import uploadConfig from '../config/upload';
 import Transaction from '../models/Transaction';
 import Category from '../models/Category';
 
-import TransactionsRepository from '../repositories/TransactionsRepository';
-
-interface CSVTransaction {
+interface ImportData {
   title: string;
   type: 'income' | 'outcome';
   value: number;
@@ -15,93 +17,86 @@ interface CSVTransaction {
 }
 
 class ImportTransactionsService {
-  async execute(filePath: string): Promise<Transaction[]> {
-    // TODO
-    const transactionRepository = getCustomRepository(TransactionsRepository);
+  public async execute(filename: string): Promise<Transaction[]> {
+    const transactionsRepository = getCustomRepository(TransactionsRepository);
     const categoriesRepository = getRepository(Category);
-    // stream que lê nossos arquivos
-    const contactsReadStream = fs.createReadStream(filePath);
 
-    // instanciar csvParse
-    const parsers = csvParse({
-      // no csv parse o primeiro elemento é 1 e não 0, então começamos na linha 2
-      from_line: 2,
-    });
+    const csvFilePath = path.resolve(uploadConfig.directory, filename);
 
-    // vai lendo as linhas conforme forem disponíveis
-    const parseCSV = contactsReadStream.pipe(parsers);
+    const transactions = await this.loadCSV(csvFilePath);
 
-    // variáveis para guardar dados
-    const transactions: CSVTransaction[] = [];
-    const categories: string[] = [];
+    const categories = transactions.map(t => t.category);
 
-    // leitura do arquivo e desestruturação dos dados
-    parseCSV.on('data', async line => {
-      const [title, type, value, category] = line.map((cell: string) =>
-        cell.trim(),
-      );
-
-      // verificar se as variáveis estão chegando corretamente. Se algum deles
-      // não existir, retornamos para não inserir os valores
-      if (!title || !type || !value) return;
-
-      // bookinsert - técnica para salvar vários dados no banco de dados com apenas uma conexão
-      // adicionamos dados nos arrays
-      categories.push(category);
-      transactions.push({ title, type, value, category });
-    });
-
-    // criamos uma nova promise, pois a leitura de dados não é síncrona
-    // verifica se o parseCSV emite um evento END.
-    await new Promise(resolve => parseCSV.on('end', resolve));
-
-    // utilizaremos uma nova regra de negócio para inserção dos dados, que é otimizada
-    // para salvar dados com apenas uma conexão, ao invés de usar a createTransaction,
-    // que salva uma a uma
-
-    // mapear categorias no nosso banco de dados
     const existentCategories = await categoriesRepository.find({
       where: {
         title: In(categories),
       },
     });
 
-    // para retornar só o title
     const existentCategoriesTitles = existentCategories.map(
-      (category: Category) => category.title,
+      category => category.title,
     );
 
-    // retornar só o title de todas as categories que não existiam e filtrar as duplicadas
-    const addCategoryTitles = categories
+    const toCreateCategories = transactions
+      .map(category => category.category)
       .filter(category => !existentCategoriesTitles.includes(category))
       .filter((value, index, self) => self.indexOf(value) === index);
 
     const newCategories = categoriesRepository.create(
-      addCategoryTitles.map(title => ({
-        title,
-      })),
+      toCreateCategories.map(title => ({ title })),
     );
 
     await categoriesRepository.save(newCategories);
 
     const finalCategories = [...newCategories, ...existentCategories];
 
-    const createdTransactions = transactionRepository.create(
-      transactions.map(transaction => ({
-        title: transaction.title,
-        type: transaction.type,
-        value: transaction.value,
+    const createdTransactions = transactionsRepository.create(
+      transactions.map(t => ({
+        title: t.title,
+        type: t.type,
+        value: t.value,
         category: finalCategories.find(
-          category => category.title === transaction.category,
+          category => category.title === t.category,
         ),
       })),
     );
 
-    await transactionRepository.save(createdTransactions);
-    // excluir arquivo
-    await fs.promises.unlink(filePath);
+    await transactionsRepository.save(createdTransactions);
+
+    await fs.promises.unlink(csvFilePath);
 
     return createdTransactions;
+  }
+
+  private async loadCSV(filePath: string): Promise<ImportData[]> {
+    const readCSVStream = fs.createReadStream(filePath);
+
+    const parseStream = csvParse({
+      from_line: 2,
+      ltrim: true,
+      rtrim: true,
+    });
+
+    const parseCSV = readCSVStream.pipe(parseStream);
+
+    const lines: ImportData[] = [];
+
+    parseCSV.on('data', line => {
+      if (!line[0] || !line[1] || !line[2]) return;
+
+      lines.push({
+        title: line[0],
+        type: line[1],
+        value: Number(line[2]),
+        category: line[3],
+      });
+    });
+
+    await new Promise(resolve => {
+      parseCSV.on('end', resolve);
+    });
+
+    return lines;
   }
 }
 
