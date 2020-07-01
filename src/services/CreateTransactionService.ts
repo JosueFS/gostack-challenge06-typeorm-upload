@@ -1,13 +1,16 @@
-// import AppError from '../errors/AppError';
-import { getCustomRepository } from 'typeorm';
+import { getCustomRepository, getRepository } from 'typeorm';
 
-import TransactionsRepository from '../repositories/TransactionsRepository';
 import Transaction from '../models/Transaction';
+import Category from '../models/Category';
+
+import AppError from '../errors/AppError';
+import TransactionsRepository from '../repositories/TransactionsRepository';
 
 interface RequestDTO {
   title: string;
   value: number;
   type: 'income' | 'outcome';
+  category: string;
 }
 
 class CreateTransactionService {
@@ -15,26 +18,41 @@ class CreateTransactionService {
     title,
     value,
     type,
+    category,
   }: RequestDTO): Promise<Transaction> {
     const transactionsRepository = getCustomRepository(TransactionsRepository);
+    const categoryRepository = getRepository(Category);
 
-    const transactions = await transactionsRepository.find();
+    const { total } = await transactionsRepository.getBalance();
 
     if (!['income', 'outcome'].includes(type)) {
-      throw new Error('Transaction type is invalid');
+      throw new AppError('Transaction type is invalid');
     }
 
-    const { total } = transactionsRepository.getBalance(transactions);
-
     if (type === 'outcome' && total - value < 0) {
-      throw new Error('Insufficient funds..');
+      throw new AppError('Insufficient funds..');
+    }
+
+    let transactionCategory = await categoryRepository.findOne({
+      where: { title: category },
+    });
+
+    if (!transactionCategory) {
+      transactionCategory = categoryRepository.create({
+        title: category,
+      });
+
+      await categoryRepository.save(transactionCategory);
     }
 
     const newTransaction = transactionsRepository.create({
       title,
       type,
       value,
+      category: transactionCategory,
     });
+
+    await transactionsRepository.save(newTransaction);
 
     return newTransaction;
   }

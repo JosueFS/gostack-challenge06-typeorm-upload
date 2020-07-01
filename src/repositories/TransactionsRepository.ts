@@ -12,16 +12,19 @@ interface CreateTransactionDTO {
   title: string;
   value: number;
   type: 'income' | 'outcome';
+  category: string;
 }
 
 @EntityRepository(Transaction)
 class TransactionsRepository extends Repository<Transaction> {
-  public getBalance(transactions: Transaction[]): Balance {
+  public async getBalance(): Promise<Balance> {
+    const transactions = await this.find();
+
     const balance: Balance = transactions.reduce(
-      (accum, obj) => {
+      (accum: Balance, obj: Transaction) => {
         const b = accum;
 
-        b[obj.type] += obj.value;
+        b[obj.type] += Number(obj.value);
 
         return b;
       },
